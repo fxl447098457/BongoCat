@@ -14,6 +14,7 @@ typedef struct BongoCatPlatform {
     void *native;
     void *presenter;
     void *relative_pointer;
+    uint64_t relative_pointer_retry_ms;
     uint32_t wake_event_type;
     float window_opacity;
 } BongoCatPlatform;
@@ -96,9 +97,12 @@ bool bongo_cat_platform_frame_alpha(const BongoCatPlatform *platform,
 void bongo_cat_platform_set_visible(BongoCatPlatform *platform, bool visible);
 bool bongo_cat_platform_pointer_local(BongoCatPlatform *platform, double screen_x,
     double screen_y, float *local_x, float *local_y);
+/* Reports a foreground application's fixed/locked system cursor state. */
+bool bongo_cat_platform_pointer_locked(BongoCatPlatform *platform);
 bool bongo_cat_platform_relative_pointer(BongoCatPlatform *platform,
     double *x, double *y);
 void bongo_cat_platform_relative_pointer_reset(BongoCatPlatform *platform);
+void bongo_cat_platform_relative_pointer_release(BongoCatPlatform *platform);
 void bongo_cat_platform_set_always_on_top(BongoCatPlatform *platform, bool enabled);
 void bongo_cat_platform_raise_window(SDL_Window *window);
 /* Configure platform-native chrome for the preferences window when available. */

@@ -127,12 +127,19 @@ bool bongo_cat_platform_pointer_local(BongoCatPlatform *platform, double screen_
     *local_x = (float)(screen_x - x); *local_y = (float)(screen_y - y);
     return *local_x >= 0 && *local_x < width && *local_y >= 0 && *local_y < height;
 }
+bool bongo_cat_platform_pointer_locked(BongoCatPlatform *platform) {
+    (void)platform;
+    return false;
+}
 bool bongo_cat_platform_relative_pointer(BongoCatPlatform *platform,
     double *x, double *y) {
     (void)platform; (void)x; (void)y;
     return false;
 }
 void bongo_cat_platform_relative_pointer_reset(BongoCatPlatform *platform) {
+    (void)platform;
+}
+void bongo_cat_platform_relative_pointer_release(BongoCatPlatform *platform) {
     (void)platform;
 }
 void bongo_cat_platform_set_always_on_top(BongoCatPlatform *platform, bool enabled) {

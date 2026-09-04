@@ -213,7 +213,8 @@ to the bounded atomic queue and publish pointer coordinates through a separate
 coalescing slot; a successful publish pushes a native SDL wake event. This
 keeps high-frequency motion from displacing ordered key and button edges. On
 Windows, DirectInput is used only through the platform pointer interface when a
-model requests relative movement. SDL3 window, preferences, and gamepad events
+model requests relative movement or a foreground application locks the cursor.
+SDL3 window, preferences, and gamepad events
 are handled on the main thread, where gamepad events are normalized before they
 reach model parameters or shortcuts. No platform listener calls Live2D,
 overlay, or UI code directly.

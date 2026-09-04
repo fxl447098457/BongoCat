@@ -17,6 +17,15 @@ typedef struct WindowsInputState {
     BongoCatWindowsKeyboard keyboard_state;
     UINT test_drop_key_up;
     DWORD test_start_delay_ms;
+    DWORD keyboard_hook_error, mouse_hook_error;
+    unsigned long long keyboard_events, mouse_moves, mouse_buttons;
+    unsigned long long reported_keyboard_events, reported_mouse_moves;
+    unsigned long long reported_mouse_buttons;
+    ULONGLONG last_diagnostic_ms;
+    bool diagnostic_ready;
+    POINT last_mouse;
+    DWORD last_mouse_flags;
+    bool last_mouse_known;
 } WindowsInputState;
 
 static WindowsInputState *global_state;
@@ -54,9 +63,12 @@ static void emit_key(bool down, const char *name, void *userdata) {
 
 static LRESULT CALLBACK keyboard_hook(int code, WPARAM message, LPARAM data) {
     WindowsInputState *state = global_state;
-    if (code == HC_ACTION && state) bongo_cat_windows_keyboard_event(
-        &state->keyboard_state, (const KBDLLHOOKSTRUCT *)data, message,
-        &state->test_drop_key_up, emit_key, NULL);
+    if (code == HC_ACTION && state) {
+        state->keyboard_events++;
+        bongo_cat_windows_keyboard_event(&state->keyboard_state,
+            (const KBDLLHOOKSTRUCT *)data, message,
+            &state->test_drop_key_up, emit_key, NULL);
+    }
     return CallNextHookEx(NULL, code, message, data);
 }
 
@@ -75,7 +87,10 @@ static LRESULT CALLBACK mouse_hook(int code, WPARAM message, LPARAM data) {
     WindowsInputState *state = global_state;
     if (code == HC_ACTION && state) {
         const MSLLHOOKSTRUCT *mouse = (const MSLLHOOKSTRUCT *)data;
+        state->last_mouse = mouse->pt; state->last_mouse_flags = mouse->flags;
+        state->last_mouse_known = true;
         if (message == WM_MOUSEMOVE) {
+            state->mouse_moves++;
             AcquireSRWLockShared(&state->platform_lock);
             BongoCatPlatform *platform = state->platform;
             if (platform && bongo_cat_input_mouse(platform->input,
@@ -85,8 +100,11 @@ static LRESULT CALLBACK mouse_hook(int code, WPARAM message, LPARAM data) {
             const char *name = mouse_button(message, mouse->mouseData);
             bool down = message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN ||
                 message == WM_MBUTTONDOWN || message == WM_XBUTTONDOWN;
-            if (name) push_event(down ? BONGO_CAT_INPUT_MOUSE_DOWN :
-                BONGO_CAT_INPUT_MOUSE_UP, name, down ? 1.0f : 0.0f);
+            if (name) {
+                state->mouse_buttons++;
+                push_event(down ? BONGO_CAT_INPUT_MOUSE_DOWN :
+                    BONGO_CAT_INPUT_MOUSE_UP, name, down ? 1.0f : 0.0f);
+            }
         }
     }
     return CallNextHookEx(NULL, code, message, data);
@@ -100,18 +118,83 @@ static void dispatch_messages(void) {
     }
 }
 
+static void log_input_summary(WindowsInputState *state, ULONGLONG now_ms) {
+    RECT clip = {0};
+    bool clip_known = GetClipCursor(&clip) != FALSE;
+    RECT desktop = {
+        GetSystemMetrics(SM_XVIRTUALSCREEN),
+        GetSystemMetrics(SM_YVIRTUALSCREEN), 0, 0
+    };
+    desktop.right = desktop.left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    desktop.bottom = desktop.top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    bool confined = clip_known && (clip.left > desktop.left ||
+        clip.top > desktop.top || clip.right < desktop.right ||
+        clip.bottom < desktop.bottom);
+    HWND foreground = GetForegroundWindow();
+    DWORD foreground_pid = 0;
+    if (foreground) GetWindowThreadProcessId(foreground, &foreground_pid);
+    POINT physical = {0};
+    bool physical_known = GetPhysicalCursorPos(&physical) != FALSE;
+    CURSORINFO cursor = {.cbSize = sizeof(cursor)};
+    bool cursor_known = GetCursorInfo(&cursor) != FALSE;
+    bool cursor_visible = !cursor_known ||
+        (cursor.flags & CURSOR_SHOWING) != 0;
+    unsigned long long key_delta = state->keyboard_events -
+        state->reported_keyboard_events;
+    unsigned long long move_delta = state->mouse_moves -
+        state->reported_mouse_moves;
+    unsigned long long button_delta = state->mouse_buttons -
+        state->reported_mouse_buttons;
+    bool active = confined || !cursor_visible || key_delta ||
+        move_delta || button_delta;
+    ULONGLONG interval_ms = active ? 30000 : 60000;
+    if (state->diagnostic_ready &&
+        now_ms - state->last_diagnostic_ms < interval_ms) return;
+    SDL_Log("[input] Windows hooks: keyboard=%d mouse=%d "
+        "key_events=%llu(+%llu) mouse_moves=%llu(+%llu) "
+        "mouse_buttons=%llu(+%llu) last_known=%d last=%ld,%ld flags=0x%lx "
+        "physical_known=%d physical=%ld,%ld cursor_known=%d cursor_visible=%d "
+        "cursor_confined=%d clip_known=%d clip=%ld,%ld,%ld,%ld "
+        "desktop=%ld,%ld,%ld,%ld foreground_pid=%lu own_foreground=%d",
+        state->keyboard != NULL, state->mouse != NULL,
+        state->keyboard_events, key_delta, state->mouse_moves, move_delta,
+        state->mouse_buttons, button_delta,
+        state->last_mouse_known, (long)state->last_mouse.x,
+        (long)state->last_mouse.y, (unsigned long)state->last_mouse_flags,
+        physical_known,
+        (long)physical.x, (long)physical.y,
+        cursor_known, cursor_visible,
+        confined, clip_known,
+        (long)clip.left, (long)clip.top, (long)clip.right, (long)clip.bottom,
+        (long)desktop.left, (long)desktop.top,
+        (long)desktop.right, (long)desktop.bottom,
+        (unsigned long)foreground_pid,
+        foreground_pid == GetCurrentProcessId());
+    state->reported_keyboard_events = state->keyboard_events;
+    state->reported_mouse_moves = state->mouse_moves;
+    state->reported_mouse_buttons = state->mouse_buttons;
+    state->last_diagnostic_ms = now_ms;
+    state->diagnostic_ready = true;
+}
+
 static DWORD WINAPI input_thread(void *context) {
     WindowsInputState *state = context;
     if (state->test_start_delay_ms && WaitForSingleObject(state->stop,
         state->test_start_delay_ms) == WAIT_OBJECT_0) return 0;
     if (WaitForSingleObject(state->stop, 0) == WAIT_OBJECT_0) return 0;
     global_state = state;
+    SetLastError(ERROR_SUCCESS);
     state->keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, keyboard_hook, NULL, 0);
+    if (!state->keyboard) state->keyboard_hook_error = GetLastError();
+    SetLastError(ERROR_SUCCESS);
     state->mouse = SetWindowsHookExW(WH_MOUSE_LL, mouse_hook, NULL, 0);
-    if (!state->keyboard || !state->mouse) SDL_LogWarn(
-        SDL_LOG_CATEGORY_APPLICATION,
-        "Global input hooks are unavailable; global input may be incomplete");
+    if (!state->mouse) state->mouse_hook_error = GetLastError();
+    SDL_Log("[input] Windows hook installation: keyboard=%d error=%lu "
+        "mouse=%d error=%lu", state->keyboard != NULL,
+        (unsigned long)state->keyboard_hook_error, state->mouse != NULL,
+        (unsigned long)state->mouse_hook_error);
     ULONGLONG last_reconcile_ms = GetTickCount64();
+    ULONGLONG next_diagnostic_probe_ms = last_reconcile_ms;
     for (;;) {
         DWORD wait = MsgWaitForMultipleObjects(1, &state->stop, FALSE, 25,
             QS_ALLINPUT);
@@ -123,12 +206,18 @@ static DWORD WINAPI input_thread(void *context) {
             break;
         }
         ULONGLONG now_ms = GetTickCount64();
+        if (now_ms >= next_diagnostic_probe_ms) {
+            log_input_summary(state, now_ms);
+            next_diagnostic_probe_ms = now_ms + 1000;
+        }
         if (now_ms - last_reconcile_ms >= 25) {
             bongo_cat_windows_keyboard_reconcile(&state->keyboard_state,
                 now_ms, emit_key, NULL);
             last_reconcile_ms = now_ms;
         }
     }
+    state->diagnostic_ready = false;
+    log_input_summary(state, GetTickCount64());
     if (state->keyboard) UnhookWindowsHookEx(state->keyboard);
     if (state->mouse) UnhookWindowsHookEx(state->mouse);
     global_state = NULL;

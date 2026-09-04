@@ -61,9 +61,6 @@ BongoCatResult bongo_cat_platform_init(BongoCatPlatform *platform, SDL_Window *w
             "Global input hooks are unavailable; the window will continue without global input");
     }
     HWND hwnd = native_window(platform);
-    if (!bongo_cat_windows_direct_input_create(platform, hwnd))
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "Mver-compatible DirectInput mouse tracking is unavailable");
     SetWindowTextW(hwnd, bongo_cat_windows_instance_title());
     bongo_cat_windows_borderless_install(hwnd);
     bongo_cat_windows_capture_configure(hwnd);
@@ -138,7 +135,39 @@ void bongo_cat_platform_begin_drag(BongoCatPlatform *platform,
     bongo_cat_windows_begin_drag(hwnd, modal_tick, userdata);
 }
 bool bongo_cat_platform_dynamic_hit_supported(void) { return true; }
+bool bongo_cat_platform_pointer_locked(BongoCatPlatform *platform) {
+    if (!platform) return false;
+    HWND foreground = GetForegroundWindow();
+    DWORD foreground_pid = 0;
+    if (!foreground || !GetWindowThreadProcessId(foreground, &foreground_pid) ||
+        foreground_pid == GetCurrentProcessId()) return false;
+    RECT clip = {0};
+    if (!GetClipCursor(&clip)) return false;
+    LONG width = clip.right - clip.left;
+    LONG height = clip.bottom - clip.top;
+    return width >= 0 && width <= 2 && height >= 0 && height <= 2;
+}
+bool bongo_cat_platform_relative_pointer(BongoCatPlatform *platform,
+    double *x, double *y) {
+    if (!platform || !x || !y) return false;
+    uint64_t now_ms = GetTickCount64();
+    if (!platform->relative_pointer) {
+        if (platform->relative_pointer_retry_ms > now_ms) return false;
+        if (!bongo_cat_windows_direct_input_create(platform,
+            native_window(platform))) {
+            platform->relative_pointer_retry_ms = now_ms + 5000;
+            return false;
+        }
+        platform->relative_pointer_retry_ms = 0;
+    }
+    return bongo_cat_windows_direct_input_read(platform, x, y);
+}
 void bongo_cat_platform_relative_pointer_reset(BongoCatPlatform *platform) {
     bongo_cat_windows_direct_input_reset(platform);
+}
+void bongo_cat_platform_relative_pointer_release(BongoCatPlatform *platform) {
+    if (!platform) return;
+    bongo_cat_windows_direct_input_destroy(platform);
+    platform->relative_pointer_retry_ms = 0;
 }
 #endif

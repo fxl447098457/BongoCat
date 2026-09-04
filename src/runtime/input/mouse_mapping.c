@@ -54,19 +54,41 @@ static bool mver_pointer_bounds(const BongoCatApp *app, SDL_Rect *bounds) {
     return bounds->w > 0 && bounds->h > 0;
 }
 
-bool bongo_cat_app_map_mver_pointer(BongoCatApp *app, double absolute_x,
-    double absolute_y, double *x, double *y, bool *changed) {
+static bool tracked_pointer_bounds(BongoCatApp *app, double absolute_x,
+    double absolute_y, SDL_Rect *bounds) {
+    if (!app || !bounds) return false;
+    if (app->model_render_options.mver_projection)
+        return mver_pointer_bounds(app, bounds);
+    SDL_Point point = {(int)absolute_x, (int)absolute_y};
+    SDL_DisplayID window_display = app->window
+        ? SDL_GetDisplayForWindow(app->window) : 0;
+    SDL_DisplayID display = app->settings.model.mouse_centered
+        ? window_display : SDL_GetDisplayForPoint(&point);
+    if (!display) display = window_display;
+    return display && SDL_GetDisplayBounds(display, bounds) &&
+        bounds->w > 0 && bounds->h > 0;
+}
+
+bool bongo_cat_app_map_pointer(BongoCatApp *app, bool relative_requested,
+    double absolute_x, double absolute_y, double *x, double *y, bool *changed) {
     SDL_Rect bounds;
-    if (!mver_pointer_bounds(app, &bounds)) return false;
+    if (!tracked_pointer_bounds(app, absolute_x, absolute_y, &bounds)) return false;
     BongoCatMverPointerBounds pointer_bounds = {
         bounds.x, bounds.y, bounds.w, bounds.h
     };
     double relative_x = 0.0, relative_y = 0.0;
-    bool use_relative = app->model_render_options.mouse_force_move &&
+    bool use_relative = relative_requested &&
         bongo_cat_platform_relative_pointer(&app->platform,
             &relative_x, &relative_y);
     bool initialized = app->mver_pointer.initialized;
     double previous_x = app->mver_pointer.x, previous_y = app->mver_pointer.y;
+    /* A temporary device read failure must not snap a locked game pointer
+       back to the fixed screen coordinate. Keep the virtual position until
+       relative samples resume; the first sample still seeds from reality. */
+    if (relative_requested && initialized && !use_relative) {
+        absolute_x = previous_x;
+        absolute_y = previous_y;
+    }
     if (!bongo_cat_mver_pointer_update(&app->mver_pointer,
         absolute_x, absolute_y, relative_x, relative_y, use_relative,
         &pointer_bounds, x, y)) return false;
@@ -177,10 +199,14 @@ void bongo_cat_app_apply_mouse_coordinates(BongoCatApp *app, double hand_x,
 
 void bongo_cat_app_reset_pointer_tracking(BongoCatApp *app) {
     if (!app) return;
-    bongo_cat_platform_relative_pointer_reset(&app->platform);
+    if (app->pointer_relative_active)
+        bongo_cat_platform_relative_pointer_reset(&app->platform);
+    else bongo_cat_platform_relative_pointer_release(&app->platform);
     app->mver_pointer = (BongoCatMverPointerState){0};
     app->model_pointer_anchor_ready = false;
     app->pointer_known = false;
+    app->mouse_last_ns = 0;
+    app->pointer_relative_active = false;
     app->dirty = true;
 }
 

@@ -50,6 +50,21 @@ function Show-FailureLog {
     }
 }
 
+function Test-NsisCompiler {
+    param([string]$Path)
+    if (-not $Path -or
+        -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        $versionOutput = @(& $Path /VERSION 2>&1)
+        $versionStatus = $LASTEXITCODE
+    } catch {
+        return $false
+    }
+    if ($versionStatus -ne 0) { return $false }
+    $versionText = ($versionOutput | ForEach-Object { $_.ToString() }) -join "`n"
+    return $versionText.Trim() -match '^v?\d+(?:\.\d+)+$'
+}
+
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
     Write-Host 'Error: CMake was not found in PATH.'
     exit 1
@@ -57,7 +72,9 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 
 if ($Package) {
     $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
-    if (-not $makensis) {
+    $makensisPath = if ($makensis -and
+        (Test-NsisCompiler $makensis.Source)) { $makensis.Source } else { $null }
+    if (-not $makensisPath) {
         $nsisCandidates = @()
         foreach ($programFiles in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
             if ($programFiles) {
@@ -73,25 +90,35 @@ if ($Package) {
             Get-ItemProperty -Path $key -Name InstallLocation `
                 -ErrorAction SilentlyContinue | ForEach-Object {
                     if ($_.InstallLocation) {
-                        $nsisCandidates += Join-Path $_.InstallLocation 'makensis.exe'
-                        $nsisCandidates += Join-Path $_.InstallLocation 'Bin\makensis.exe'
+                        # Some uninstall registry entries store the path with
+                        # surrounding quotes (for example, `"C:\Program Files\NSIS"`).
+                        # Strip those quotes before passing it to Join-Path;
+                        # otherwise PowerShell interprets the drive as `"C`.
+                        $installLocation = ([string]$_.InstallLocation).Trim().Trim('"')
+                        if ($installLocation) {
+                            $nsisCandidates += Join-Path $installLocation 'makensis.exe'
+                            $nsisCandidates += Join-Path $installLocation 'Bin\makensis.exe'
+                        }
                     }
                 }
         }
         $nsisPath = $nsisCandidates |
-            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -Unique |
+            Where-Object { Test-NsisCompiler $_ } |
             Select-Object -First 1
         if ($nsisPath) {
             $env:Path = "$(Split-Path $nsisPath -Parent);$env:Path"
-            $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
+            $makensisPath = $nsisPath
         }
     }
-    if (-not $makensis) {
-        Write-Host 'Package build requires NSIS (makensis.exe), but it was not found.'
-        Write-Host 'Install NSIS from https://nsis.sourceforge.io/Download and run again.'
+    if (-not $makensisPath) {
+        Write-Host 'Package build requires a working NSIS compiler (makensis.exe).'
+        Write-Host 'NSIS was not found or failed its /VERSION check.'
+        Write-Host 'Install or repair NSIS from https://nsis.sourceforge.io/Download and run again.'
         Write-Host 'The normal application build does not require NSIS.'
         exit 1
     }
+    Write-Host "NSIS compiler: $makensisPath"
 }
 
 if ($Clean -and (Test-Path -LiteralPath $BuildDir)) {

@@ -125,6 +125,8 @@ typedef struct BongoCatApp {
     uint64_t pointer_hit_deadline_ns;
     uint64_t display_recovery_due_ns;
     uint64_t mouse_last_ns;
+    uint64_t mouse_diagnostic_due_ns;
+    uint64_t mouse_hook_samples;
     uint64_t frame_audit_bmp_ns;
     uint64_t random_expression_due_ns;
     float random_expression_interval_seconds;
@@ -147,6 +149,7 @@ typedef struct BongoCatApp {
     bool side_mouse_down;
     bool model_pointer_anchor_ready;
     float model_pointer_anchor_x, model_pointer_anchor_y;
+    bool pointer_relative_active;
     bool window_minimized;
     double pointer_x, pointer_y;
     bool resize_gesture;
